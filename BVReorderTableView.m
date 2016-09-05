@@ -27,7 +27,7 @@
 @interface BVReorderTableView ()
 
 @property (nonatomic, strong) UILongPressGestureRecognizer *longPress;
-@property (nonatomic, strong) CADisplayLink *scrollDisplayLink;
+@property (nonatomic, strong) NSTimer *scrollingTimer;
 @property (nonatomic, assign) CGFloat scrollRate;
 @property (nonatomic, strong) NSIndexPath *currentLocationIndexPath;
 @property (nonatomic, strong) NSIndexPath *initialIndexPath;
@@ -48,13 +48,12 @@
 
 @dynamic delegate, canReorder;
 @synthesize longPress;
-@synthesize scrollDisplayLink;
+@synthesize scrollingTimer;
 @synthesize scrollRate;
 @synthesize currentLocationIndexPath;
 @synthesize draggingView;
 @synthesize savedObject;
 @synthesize draggingRowHeight;
-@synthesize draggingViewOpacity;
 @synthesize initialIndexPath;
 
 - (id)init {
@@ -85,10 +84,7 @@
 - (void)initialize {
     longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(longPress:)];
     [self addGestureRecognizer:longPress];
-    
     self.canReorder = YES;
-    self.draggingViewOpacity = 1.0;
-    
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(onGestureEnded)
                                                  name:UIApplicationWillEnterForegroundNotification
@@ -101,9 +97,9 @@
     }
     NSIndexPath *indexPath = self.currentLocationIndexPath;
     
-    // remove scrolling CADisplayLink
-    [self.scrollDisplayLink invalidate];
-    self.scrollDisplayLink = nil;
+    // remove scrolling timer
+    [self.scrollingTimer invalidate];
+    self.scrollingTimer = nil;
     self.scrollRate = 0;
     
     // animate the drag view to the newly hovered cell
@@ -118,14 +114,7 @@
                          [self beginUpdates];
                          [self deleteRowsAtIndexPaths:[NSArray arrayWithObject:indexPath] withRowAnimation:UITableViewRowAnimationNone];
                          [self insertRowsAtIndexPaths:[NSArray arrayWithObject:indexPath] withRowAnimation:UITableViewRowAnimationNone];
-                         
-                         if ([self.delegate respondsToSelector:@selector(finishReorderingWithObject:atIndexPath:)])
-                         {
-                             [self.delegate finishReorderingWithObject:self.savedObject atIndexPath:indexPath];
-                         }
-                         else {
-                             NSLog(@"finishReorderingWithObject:atIndexPath: is not implemented");
-                         }
+                         [self.delegate finishReorderingWithObject:self.savedObject atIndexPath:indexPath];
                          [self endUpdates];
                          
                          // reload the rows that were affected just to be safe
@@ -156,12 +145,8 @@
     }
     
     // get out of here if the long press was not on a valid row or our table is empty
-    // or the dataSource tableView:canMoveRowAtIndexPath: doesn't allow moving the row
     if (rows == 0 || (gesture.state == UIGestureRecognizerStateBegan && indexPath == nil) ||
-        (gesture.state == UIGestureRecognizerStateEnded && self.currentLocationIndexPath == nil) ||
-        (gesture.state == UIGestureRecognizerStateBegan &&
-         [self.dataSource respondsToSelector:@selector(tableView:canMoveRowAtIndexPath:)] &&
-         indexPath && ![self.dataSource tableView:self canMoveRowAtIndexPath:indexPath])) {
+        (gesture.state == UIGestureRecognizerStateEnded && self.currentLocationIndexPath == nil)) {
         [self cancelGesture];
         return;
     }
@@ -194,7 +179,7 @@
             draggingView.layer.shadowOffset = CGSizeMake(0, 0);
             draggingView.layer.shadowRadius = 4.0;
             draggingView.layer.shadowOpacity = 0.7;
-            draggingView.layer.opacity = self.draggingViewOpacity;
+            //draggingView.layer.opacity = 0.8;
             
             // zoom image towards user
             [UIView beginAnimations:@"zoom" context:nil];
@@ -206,21 +191,16 @@
         [self beginUpdates];
         [self deleteRowsAtIndexPaths:[NSArray arrayWithObject:indexPath] withRowAnimation:UITableViewRowAnimationNone];
         [self insertRowsAtIndexPaths:[NSArray arrayWithObject:indexPath] withRowAnimation:UITableViewRowAnimationNone];
-        
-        if ([self.delegate respondsToSelector:@selector(saveObjectAndInsertBlankRowAtIndexPath:)]) {
-            self.savedObject = [self.delegate saveObjectAndInsertBlankRowAtIndexPath:indexPath];
-        }
-        else {
-            NSLog(@"saveObjectAndInsertBlankRowAtIndexPath: is not implemented");
-        }
-        
+        self.savedObject = [self.delegate saveObjectAndInsertBlankRowAtIndexPath:indexPath];
         self.currentLocationIndexPath = indexPath;
         self.initialIndexPath = indexPath;
         [self endUpdates];
         
         // enable scrolling for cell
-        self.scrollDisplayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(scrollTableWithCell:)];
-        [self.scrollDisplayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];        
+        NSMutableDictionary *userInfo = [NSMutableDictionary dictionaryWithObject:gesture forKey:@"gesture"];
+        self.scrollingTimer = [NSTimer timerWithTimeInterval:1/8 target:self selector:@selector(scrollTableWithCell:) userInfo:userInfo repeats:YES];
+        [[NSRunLoop mainRunLoop] addTimer:self.scrollingTimer forMode:NSDefaultRunLoopMode];
+        
     }
     // dragging
     else if (gesture.state == UIGestureRecognizerStateChanged) {
@@ -234,7 +214,7 @@
         // adjust rect for content inset as we will use it below for calculating scroll zones
         rect.size.height -= self.contentInset.top;
         CGPoint location = [gesture locationInView:self];
-        
+
         [self updateCurrentLocation:gesture];
         
         // tell us if we should scroll and which direction
@@ -280,34 +260,28 @@
         [self beginUpdates];
         [self deleteRowsAtIndexPaths:[NSArray arrayWithObject:self.currentLocationIndexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
         [self insertRowsAtIndexPaths:[NSArray arrayWithObject:indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
-        
-        if ([self.delegate respondsToSelector:@selector(moveRowAtIndexPath:toIndexPath:)]) {
-            [self.delegate moveRowAtIndexPath:self.currentLocationIndexPath toIndexPath:indexPath];
-        }
-        else {
-            NSLog(@"moveRowAtIndexPath:toIndexPath: is not implemented");
-        }
-        
+        [self.delegate moveRowAtIndexPath:self.currentLocationIndexPath toIndexPath:indexPath];
         self.currentLocationIndexPath = indexPath;
         [self endUpdates];
     }
 }
 
-- (void)scrollTableWithCell:(NSTimer *)timer {    
-    UILongPressGestureRecognizer *gesture = self.longPress;
+- (void)scrollTableWithCell:(NSTimer *)timer {
+
+    UILongPressGestureRecognizer *gesture = [timer.userInfo objectForKey:@"gesture"];
     CGPoint location  = [gesture locationInView:self];
     
     CGPoint currentOffset = self.contentOffset;
-    CGPoint newOffset = CGPointMake(currentOffset.x, currentOffset.y + self.scrollRate * 10);
-    
+    CGPoint newOffset = CGPointMake(currentOffset.x, currentOffset.y + self.scrollRate);
+
     if (newOffset.y < -self.contentInset.top) {
         newOffset.y = -self.contentInset.top;
-    } else if (self.contentSize.height + self.contentInset.bottom < self.frame.size.height) {
+    } else if (self.contentSize.height < self.frame.size.height) {
         newOffset = currentOffset;
-    } else if (newOffset.y > (self.contentSize.height + self.contentInset.bottom) - self.frame.size.height) {
-        newOffset.y = (self.contentSize.height + self.contentInset.bottom) - self.frame.size.height;
+    } else if (newOffset.y > self.contentSize.height - self.frame.size.height) {
+        newOffset.y = self.contentSize.height - self.frame.size.height;
+    } else {
     }
-    
     [self setContentOffset:newOffset];
     
     if (location.y >= 0 && location.y <= self.contentSize.height + 50) {
