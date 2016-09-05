@@ -88,8 +88,55 @@
     
     self.canReorder = YES;
     self.draggingViewOpacity = 1.0;
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onGestureEnded)
+                                                 name:UIApplicationWillEnterForegroundNotification
+                                               object:nil];
 }
 
+- (void)onGestureEnded {
+    if (self.currentLocationIndexPath == nil) {
+        return;
+    }
+    NSIndexPath *indexPath = self.currentLocationIndexPath;
+    
+    // remove scrolling CADisplayLink
+    [self.scrollDisplayLink invalidate];
+    self.scrollDisplayLink = nil;
+    self.scrollRate = 0;
+    
+    // animate the drag view to the newly hovered cell
+    [UIView animateWithDuration:0.3
+                     animations:^{
+                         CGRect rect = [self rectForRowAtIndexPath:indexPath];
+                         draggingView.transform = CGAffineTransformIdentity;
+                         draggingView.frame = CGRectOffset(draggingView.bounds, rect.origin.x, rect.origin.y);
+                     } completion:^(BOOL finished) {
+                         [draggingView removeFromSuperview];
+                         
+                         [self beginUpdates];
+                         [self deleteRowsAtIndexPaths:[NSArray arrayWithObject:indexPath] withRowAnimation:UITableViewRowAnimationNone];
+                         [self insertRowsAtIndexPaths:[NSArray arrayWithObject:indexPath] withRowAnimation:UITableViewRowAnimationNone];
+                         
+                         if ([self.delegate respondsToSelector:@selector(finishReorderingWithObject:atIndexPath:)])
+                         {
+                             [self.delegate finishReorderingWithObject:self.savedObject atIndexPath:indexPath];
+                         }
+                         else {
+                             NSLog(@"finishReorderingWithObject:atIndexPath: is not implemented");
+                         }
+                         [self endUpdates];
+                         
+                         // reload the rows that were affected just to be safe
+                         NSMutableArray *visibleRows = [[self indexPathsForVisibleRows] mutableCopy];
+                         [visibleRows removeObject:indexPath];
+                         [self reloadRowsAtIndexPaths:visibleRows withRowAnimation:UITableViewRowAnimationNone];
+                         
+                         self.currentLocationIndexPath = nil;
+                         self.draggingView = nil;
+                     }];
+}
 
 - (void)setCanReorder:(BOOL)canReorder {
     canReorder = canReorder;
@@ -208,44 +255,7 @@
     }
     // dropped
     else if (gesture.state == UIGestureRecognizerStateEnded) {
-        
-        NSIndexPath *indexPath = self.currentLocationIndexPath;
-        
-        // remove scrolling CADisplayLink
-        [self.scrollDisplayLink invalidate];
-        self.scrollDisplayLink = nil;
-        self.scrollRate = 0;
-        
-        // animate the drag view to the newly hovered cell
-        [UIView animateWithDuration:0.3
-                         animations:^{
-                             CGRect rect = [self rectForRowAtIndexPath:indexPath];
-                             draggingView.transform = CGAffineTransformIdentity;
-                             draggingView.frame = CGRectOffset(draggingView.bounds, rect.origin.x, rect.origin.y);
-                         } completion:^(BOOL finished) {
-                             [draggingView removeFromSuperview];
-                             
-                             [self beginUpdates];
-                             [self deleteRowsAtIndexPaths:[NSArray arrayWithObject:indexPath] withRowAnimation:UITableViewRowAnimationNone];
-                             [self insertRowsAtIndexPaths:[NSArray arrayWithObject:indexPath] withRowAnimation:UITableViewRowAnimationNone];
-                             
-                             if ([self.delegate respondsToSelector:@selector(finishReorderingWithObject:atIndexPath:)])
-                             {
-                                 [self.delegate finishReorderingWithObject:self.savedObject atIndexPath:indexPath];
-                             }
-                             else {
-                                 NSLog(@"finishReorderingWithObject:atIndexPath: is not implemented");
-                             }
-                             [self endUpdates];
-                             
-                             // reload the rows that were affected just to be safe
-                             NSMutableArray *visibleRows = [[self indexPathsForVisibleRows] mutableCopy];
-                             [visibleRows removeObject:indexPath];
-                             [self reloadRowsAtIndexPaths:visibleRows withRowAnimation:UITableViewRowAnimationNone];
-                             
-                             self.currentLocationIndexPath = nil;
-                             self.draggingView = nil;
-                         }];
+        [self onGestureEnded];
     }
 }
 
